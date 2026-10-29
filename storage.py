@@ -1,4 +1,5 @@
 import sqlite3
+import os
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -21,10 +22,23 @@ class Storage:
     def connect(self):
         """Create and return a raw SQLite connection.
         Caller is responsible for closing it, or use session() for automatic management."""
+        if os.name == 'posix':
+            # Create new databases as private from the start, and tighten the
+            # permissions of databases created by older Orvix versions.
+            try:
+                fd = os.open(self.path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            except FileExistsError:
+                self.path.chmod(0o600)
+            else:
+                os.close(fd)
         db = sqlite3.connect(self.path, timeout=self.timeout)
-        db.row_factory = sqlite3.Row
-        db.execute('PRAGMA foreign_keys=ON')
-        return db
+        try:
+            db.row_factory = sqlite3.Row
+            db.execute('PRAGMA foreign_keys=ON')
+            return db
+        except BaseException:
+            db.close()
+            raise
 
     @contextmanager
     def session(self):

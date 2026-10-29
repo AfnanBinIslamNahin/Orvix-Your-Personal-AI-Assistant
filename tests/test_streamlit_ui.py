@@ -57,7 +57,7 @@ class StreamlitUiTests(unittest.TestCase):
     def running_app(self):
         from streamlit.testing.v1 import AppTest
 
-        with patch.dict(os.environ, {"GEMINI_API_KEY": "ui-test-key"}), \
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "ui-test-key", "OPENAI_API_KEY": ""}), \
              patch.object(storage, "Storage", UiStorage), \
              patch("google.genai.Client", FakeGenAIClient):
             app = AppTest.from_file(str(self.app_path)).run(timeout=30)
@@ -66,10 +66,10 @@ class StreamlitUiTests(unittest.TestCase):
     def test_new_chat_button_creates_and_selects_a_chat(self):
         with self.running_app() as app:
             self.assertFalse(app.exception)
-            self.assertEqual([widget.label for widget in app.toggle], ["Mac command mode"])
+            self.assertEqual([widget.label for widget in app.toggle], ["Agent mode"])
             self.assertEqual(len(app.checkbox), 0)
 
-            next(widget for widget in app.button if widget.label == "＋ New chat").click().run(timeout=30)
+            next(widget for widget in app.button if widget.label.strip() == "＋  New chat").click().run(timeout=30)
 
             chats = UiStorage().chats()
             self.assertEqual(len(chats), 2)
@@ -83,6 +83,35 @@ class StreamlitUiTests(unittest.TestCase):
             app.text_input(key=f"chat_rename_input_{self.chat_id}").set_value("New title").run(timeout=30)
 
             self.assertEqual(UiStorage().chats()[0]["title"], "New title")
+            self.assertFalse(app.exception)
+
+    def test_openai_provider_displays_model_ids_returned_by_api(self):
+        from streamlit.testing.v1 import AppTest
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "ui-test-key", "OPENAI_API_KEY": "configured-test-key"}), \
+             patch.object(storage, "Storage", UiStorage), \
+             patch("google.genai.Client", FakeGenAIClient), \
+             patch("openai_engine.openai_chat_models", return_value=["gpt-4o-mini", "gpt-custom"]):
+            app = AppTest.from_file(str(self.app_path)).run(timeout=30)
+            provider = next(widget for widget in app.selectbox if widget.label == "AI provider")
+            self.assertEqual(provider.options, ["Gemini", "OpenAI"])
+            provider.select("OpenAI").run(timeout=30)
+            model_select = next(widget for widget in app.selectbox if widget.label == "Answer model")
+            self.assertEqual(model_select.options, ["gpt-4o-mini", "gpt-custom"])
+            self.assertFalse(app.exception)
+
+    def test_failed_answer_keeps_user_message_and_shows_error(self):
+        from streamlit.testing.v1 import AppTest
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "ui-test-key", "OPENAI_API_KEY": ""}), \
+             patch.object(storage, "Storage", UiStorage), \
+             patch("google.genai.Client", FakeGenAIClient), \
+             patch("assistant.Assistant.answer", side_effect=RuntimeError("provider unavailable")):
+            app = AppTest.from_file(str(self.app_path)).run(timeout=30)
+            app.chat_input[0].set_value("Keep this question").run(timeout=30)
+            stored = UiStorage().messages(self.chat_id)
+            self.assertEqual([(m["role"], m["body"]) for m in stored], [("user", "Keep this question")])
+            self.assertTrue(any("provider unavailable" in item.value for item in app.error))
             self.assertFalse(app.exception)
 
     def test_edit_message_and_send_again_replaces_following_answer(self):
@@ -101,7 +130,7 @@ class StreamlitUiTests(unittest.TestCase):
             )
             self.assertFalse(app.exception)
 
-    def test_mac_mode_routes_app_command_to_local_opener(self):
+    def test_agent_mode_greets_then_routes_app_command_to_local_opener(self):
         with self.running_app() as app:
             with patch("platform.system", return_value="Darwin"), \
                  patch.object(desktop_actions, "run_mac_open") as open_mac:
@@ -110,9 +139,36 @@ class StreamlitUiTests(unittest.TestCase):
 
             open_mac.assert_called_once_with(["-a", "Safari"])
             messages = UiStorage().messages(self.chat_id)
-            self.assertEqual(messages[0]["body"], "open Safari")
-            self.assertIn("Safari", messages[1]["body"])
+            self.assertEqual(messages[0]["role"], "assistant")
+            self.assertIn("হ্যালো", messages[0]["body"])
+            self.assertEqual(messages[1]["body"], "open Safari")
+            self.assertIn("Safari", messages[2]["body"])
             self.assertFalse(app.exception)
+
+    def test_agent_voice_quota_uses_sanitized_browser_speech_fallback(self):
+        from streamlit.testing.v1 import AppTest
+
+        class QuotaModels(FakeModels):
+            def generate_content(self, **kwargs):
+                config = kwargs.get("config")
+                if isinstance(config, dict) and config.get("response_modalities") == ["AUDIO"]:
+                    error = RuntimeError("RESOURCE_EXHAUSTED")
+                    error.code = 429
+                    raise error
+                return super().generate_content(**kwargs)
+
+        class QuotaClient(FakeGenAIClient):
+            def __init__(self, **kwargs):
+                self.models = QuotaModels()
+
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "ui-test-key", "OPENAI_API_KEY": ""}), \
+             patch.object(storage, "Storage", UiStorage), \
+             patch("google.genai.Client", QuotaClient):
+            app = AppTest.from_file(str(self.app_path)).run(timeout=30)
+            app.toggle[0].set_value(True).run(timeout=30)
+            self.assertFalse(app.exception)
+            self.assertTrue(any("দৈনিক voice quota শেষ" in item.value for item in app.warning))
+            self.assertTrue(any("Play with browser voice" in item.value for item in app.html))
 
 if __name__ == "__main__":
     unittest.main()

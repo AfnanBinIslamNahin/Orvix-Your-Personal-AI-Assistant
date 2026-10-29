@@ -54,6 +54,7 @@ macOS resolves app names and reports when an app cannot be opened. File lookup i
 ## Requirements
 
 - Python 3.11 is recommended.
+- The Gemini SDK requirement is `google-genai>=2.25.0`, which supports the configured Gemini 3.8 TTS API.
 - A Gemini API key is required, including when OpenAI is selected for chat. Voice, speech, and macOS search summaries use Gemini.
 - OpenAI chat is optional and requires both the `openai` package and an OpenAI API key. ChatGPT subscriptions do not include OpenAI API credits.
 - macOS is required for local app and file commands. Chat, PDF, and voice features can run on Mac/Linux/Windows.
@@ -87,21 +88,22 @@ OPENAI_API_KEY=your_openai_api_key
 
 Available models can change. Set `GEMINI_MODEL` or `GEMINI_TTS_MODEL` in `.env` if you need to override the defaults. Use model IDs available to your API account.
 
-Start Orvix:
+Start Orvix from the project directory with the virtual environment active:
 
 ```bash
-streamlit run app.py
+python -m streamlit run app.py
 ```
 
-Open the local URL printed in the terminal.
+The checked-in Streamlit configuration binds the server to `127.0.0.1` so it is available only on the local Mac by default. Open the local URL printed in the terminal.
 
 ## Run tests
 
 ```bash
 python -m unittest discover -s tests -v
+python -m compileall -q app.py assistant.py desktop_actions.py openai_engine.py storage.py tests
 ```
 
-The tests cover storage, PDF handling, search configuration, voice handling, and the Streamlit chat and command flows. Provider API requests and real macOS app launches are not performed by the tests.
+The tests cover storage, PDF handling, search configuration, voice handling, provider model-list behavior, and Streamlit chat and command flows. Provider generation requests and real macOS app launches are not performed by the tests. Ruff, mypy, pytest, and coverage are not currently configured as project dependencies.
 
 ## Data and limitations
 

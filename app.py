@@ -5,7 +5,6 @@ import platform
 from pathlib import Path
 
 import streamlit as st
-import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
 from assistant import (
@@ -252,7 +251,7 @@ def queue_agent_speech(chat_id, text):
 def show_browser_speech(text):
     payload = json.dumps(text, ensure_ascii=False)
     payload = payload.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
-    components.html(
+    st.html(
         f"""
         <button onclick="speakOrvix()" style="padding:8px 14px;border-radius:10px;border:1px solid #8995ad;cursor:pointer">
           🔊 Play with browser voice
@@ -270,7 +269,7 @@ def show_browser_speech(text):
           }}
         </script>
         """,
-        height=52,
+        unsafe_allow_javascript=True,
     )
 
 
@@ -555,11 +554,7 @@ for index, message in enumerate(messages):
         ).get((chat_id, index))
 
         if suggestions:
-            components.html(
-                suggestions,
-                height=180,
-                scrolling=True,
-            )
+            st.html(suggestions)
 
         if message["role"] == "user":
             if st.session_state.get("editing_message_id") == message["id"]:
