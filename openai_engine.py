@@ -88,16 +88,10 @@ class OpenAIAssistant:
 
 
 def openai_chat_models(api_key):
-    """Only likely text/vision chat models; model listing alone cannot guarantee endpoint access."""
+    """Return every model ID visible to the configured OpenAI API key."""
     if not HAS_OPENAI or OpenAI is None:
         return list(OPENAI_CHAT_MODELS)
     if not api_key:
         return list(OPENAI_CHAT_MODELS)
-    try:
-        ids = [model.id for model in OpenAI(api_key=api_key).models.list().data]
-        prefixes = ('gpt-', 'o1', 'o3', 'o4')
-        exclusions = ('-image', '-audio', '-realtime', '-tts', '-transcribe', '-search', '-codex', '-embedding', '-moderation')
-        filtered = sorted({name for name in ids if name.startswith(prefixes) and not any(x in name for x in exclusions)})
-        return filtered if filtered else list(OPENAI_CHAT_MODELS)
-    except Exception:
-        return list(OPENAI_CHAT_MODELS)
+    ids = [model.id for model in OpenAI(api_key=api_key).models.list().data]
+    return sorted(set(ids)) if ids else list(OPENAI_CHAT_MODELS)

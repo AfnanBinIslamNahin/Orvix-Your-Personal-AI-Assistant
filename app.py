@@ -19,8 +19,8 @@ from assistant import (
 from storage import Storage
 from openai_engine import (
     DEFAULT_OPENAI_MODEL,
+    OPENAI_CHAT_MODELS,
     OpenAIAssistant,
-    is_openai_available,
     openai_chat_models,
 )
 from desktop_actions import execute_agent_request, parse_agent_request, speech_wav
@@ -55,10 +55,67 @@ st.markdown(
       }
       [data-testid="stHeader"] { background: transparent; }
       [data-testid="stSidebar"] {
-        background: rgba(14, 20, 31, .96);
-        border-right: 1px solid var(--orvix-border);
+        background: linear-gradient(180deg, #101725 0%, #0d131e 100%);
+        border-right: 1px solid rgba(172, 188, 214, .16);
       }
-      [data-testid="stSidebar"] > div:first-child { padding-top: 1.2rem; }
+      [data-testid="stSidebar"] > div:first-child { padding-top: 1rem; }
+      [data-testid="stSidebar"] [data-testid="stSidebarContent"] { padding: 0 1rem 1.5rem; }
+      .sidebar-brand {
+        padding: .25rem .15rem 1rem;
+        margin-bottom: .6rem;
+        border-bottom: 1px solid var(--orvix-border);
+      }
+      .sidebar-brand strong {
+        display: block;
+        color: #edf2fb;
+        font-size: 1.15rem;
+        letter-spacing: .14em;
+      }
+      .sidebar-brand span {
+        color: var(--orvix-muted);
+        font-size: .78rem;
+      }
+      .sidebar-section-label {
+        margin: .35rem 0 .3rem;
+        color: #8290a9;
+        font-size: .68rem;
+        font-weight: 700;
+        letter-spacing: .13em;
+        text-transform: uppercase;
+      }
+      [data-testid="stSidebar"] [data-testid="stVerticalBlockBorderWrapper"] {
+        border-color: rgba(139, 156, 255, .23);
+        border-radius: 14px;
+        background: rgba(139, 156, 255, .045);
+      }
+      [data-testid="stSidebar"] [data-testid="stSelectbox"] label,
+      [data-testid="stSidebar"] [data-testid="stToggle"] label {
+        color: #e4eaf6;
+        font-weight: 600;
+      }
+      [data-testid="stSidebar"] [data-testid="stSelectbox"] [data-baseweb="select"] > div {
+        min-height: 2.65rem;
+        border-color: rgba(172, 188, 214, .2);
+        border-radius: 10px;
+        background: rgba(8, 13, 22, .55);
+      }
+      [data-testid="stSidebar"] .stButton > button {
+        min-height: 2.55rem;
+        text-align: left;
+        background: rgba(255, 255, 255, .025);
+      }
+      [data-testid="stSidebar"] [data-testid="stBaseButton-primary"] {
+        border-color: rgba(139, 156, 255, .65);
+        background: linear-gradient(110deg, rgba(110, 128, 235, .9), rgba(139, 156, 255, .72));
+        color: white;
+        font-weight: 700;
+      }
+      [data-testid="stSidebar"] [data-testid="stExpander"] {
+        overflow: hidden;
+        border: 1px solid var(--orvix-border);
+        border-radius: 12px;
+        background: rgba(255, 255, 255, .025);
+      }
       [data-testid="stMainBlockContainer"] {
         max-width: 1080px;
         padding-top: 2.4rem;
@@ -105,11 +162,11 @@ st.markdown(
 
 if logo.is_file():
     logo_col, title_col = st.columns(
-        [1, 12],
+        [1.5, 10.5],
         vertical_alignment="center",
     )
     with logo_col:
-        st.image(str(logo), width=74)
+        st.image(str(logo), width=120)
     with title_col:
         st.title("Orvix — Your Personal AI Assistant")
         st.caption("Your personal assistant · ready when you are")
@@ -266,20 +323,26 @@ if "chat_id" not in st.session_state:
     )
 
 with st.sidebar:
-    agent_mode = st.toggle(
-        "Agent mode",
-        value=False,
-        key="agent_mode",
-        disabled=platform.system() != "Darwin",
-        on_change=agent_mode_changed,
+    st.markdown(
+        '<div class="sidebar-brand"><strong>ORVIX</strong><span>Your personal AI workspace</span></div>',
+        unsafe_allow_html=True,
     )
-    if agent_mode:
-        st.caption("কথা বলুন বা টাইপ করুন। ভয়েসে প্রতি turn-এ রেকর্ড করে Submit করতে হবে।")
+    with st.container(border=True):
+        agent_mode = st.toggle(
+            "Agent mode",
+            value=False,
+            key="agent_mode",
+            disabled=platform.system() != "Darwin",
+            on_change=agent_mode_changed,
+        )
+        if agent_mode:
+            st.caption("কথা বলুন বা টাইপ করুন। ভয়েসে প্রতি turn-এ রেকর্ড করে Submit করতে হবে।")
 
     st.divider()
-    st.header("Chats")
+    st.markdown('<div class="sidebar-section-label">Workspace</div>', unsafe_allow_html=True)
+    st.subheader("Chats")
 
-    if st.button("＋ New chat", use_container_width=True):
+    if st.button("＋  New chat", type="primary", use_container_width=True):
         st.session_state.chat_id = store.create_chat()
         st.rerun()
 
@@ -333,6 +396,7 @@ with st.sidebar:
                 st.rerun()
 
     st.divider()
+    st.markdown('<div class="sidebar-section-label">Assistant preferences</div>', unsafe_allow_html=True)
 
     role = st.selectbox("Assistant mode", [name for name in ROLES if name != "Agent"])
     if agent_mode:
@@ -349,7 +413,7 @@ with st.sidebar:
 
     openai_key = os.getenv("OPENAI_API_KEY")
 
-    if openai_key and openai_key != "your_openai_key_here" and is_openai_available():
+    if openai_key and openai_key != "your_openai_key_here":
         provider_options.append("OpenAI")
 
     provider = st.selectbox(
@@ -392,10 +456,14 @@ with st.sidebar:
         try:
             models = list_openai_models(openai_key)
         except Exception as exc:
-            models = [default_model]
-            st.caption(
-                f"Could not refresh OpenAI models: {exc}"
-            )
+            models = list(OPENAI_CHAT_MODELS)
+            if getattr(exc, "status_code", None) == 401:
+                st.warning(
+                    "OpenAI model list পাওয়া যায়নি: OPENAI_API_KEY expired বা invalid। "
+                    ".env-এ নতুন key দিয়ে app restart করুন।"
+                )
+            else:
+                st.warning(f"OpenAI model list লোড করা যায়নি: {exc}")
 
     if not models:
         models = [default_model]
@@ -409,16 +477,6 @@ with st.sidebar:
             else 0
         ),
     )
-
-    st.caption(
-        "The selection controls chat answers. "
-        "Voice and desktop search use the default Gemini model."
-    )
-
-    if "OpenAI" not in provider_options:
-        st.caption(
-            "OpenAI requires the openai package and OPENAI_API_KEY in .env."
-        )
 
     with st.expander("📝 Personal notes"):
         with st.form("add_note", clear_on_submit=True):

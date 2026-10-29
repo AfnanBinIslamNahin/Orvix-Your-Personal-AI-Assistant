@@ -124,7 +124,7 @@ The tests cover storage, PDF handling, search configuration, voice handling, and
 | `desktop_actions.py` | macOS app/file commands, Google search, and audio formatting |
 | `requirements.txt` | Python dependencies |
 | `.streamlit/config.toml` | Streamlit theme settings |
-| `logo.png` | Optional app logo |
+| `logo.png` | Orvix application logo with transparent background |
 
 ## Author
 
