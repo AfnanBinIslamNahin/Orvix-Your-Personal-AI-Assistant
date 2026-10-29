@@ -8,7 +8,14 @@ import streamlit as st
 import streamlit.components.v1 as components
 from dotenv import load_dotenv
 
-from assistant import Assistant, ROLES, extract_pdf, relevant_pages
+from assistant import (
+    Assistant,
+    ROLES,
+    extract_pdf,
+    pdf_has_scanned_pages,
+    relevant_pages,
+    stored_pdf_has_scanned_pages,
+)
 from storage import Storage
 from openai_engine import (
     DEFAULT_OPENAI_MODEL,
@@ -16,7 +23,7 @@ from openai_engine import (
     is_openai_available,
     openai_chat_models,
 )
-from desktop_actions import execute_command, speech_wav
+from desktop_actions import execute_agent_request, parse_agent_request, speech_wav
 
 
 load_dotenv()
@@ -132,6 +139,11 @@ def save_chat_rename(chat_id):
     st.session_state.pop("rename_chat_id", None)
 
 
+def agent_mode_changed():
+    if st.session_state.get("agent_mode"):
+        st.session_state.agent_greeting_pending = True
+
+
 def generate_answer(question, chat_id, history, role, language, provider,
                     selected_model, api_key, openai_key):
     if provider == "Gemini":
@@ -143,7 +155,7 @@ def generate_answer(question, chat_id, history, role, language, provider,
     context = relevant_pages(question, documents)
     scanned = [
         doc for doc in documents
-        if doc["body"].startswith('{"pdf_base64"')
+        if stored_pdf_has_scanned_pages(doc["body"])
     ]
     if len(scanned) > 3:
         st.warning("Using the three most recently attached scanned PDFs in this answer.")
@@ -156,6 +168,52 @@ def generate_answer(question, chat_id, history, role, language, provider,
         store.notes(),
         context,
         scanned[:3],
+    )
+
+
+def queue_agent_speech(chat_id, text):
+    if st.session_state.get("gemini_tts_quota_exhausted"):
+        st.session_state.agent_browser_speech = (chat_id, text)
+        return
+    try:
+        with st.spinner("অডিও তৈরি হচ্ছে..."):
+            st.session_state.command_audio = (chat_id, speech_wav(assistant, text))
+    except Exception as exc:
+        quota_exhausted = "RESOURCE_EXHAUSTED" in str(exc) or getattr(exc, "code", None) == 429
+        if quota_exhausted:
+            st.session_state.gemini_tts_quota_exhausted = True
+            st.session_state.command_notice = (
+                "Gemini-এর দৈনিক voice quota শেষ। নিচের Browser voice বোতামে চাপ দিয়ে শুনুন।"
+            )
+        else:
+            st.session_state.command_notice = (
+                "Gemini voice তৈরি হয়নি। নিচের Browser voice বোতামে চাপ দিয়ে শুনুন।"
+            )
+        st.session_state.agent_browser_speech = (chat_id, text)
+
+
+def show_browser_speech(text):
+    payload = json.dumps(text, ensure_ascii=False)
+    payload = payload.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+    components.html(
+        f"""
+        <button onclick="speakOrvix()" style="padding:8px 14px;border-radius:10px;border:1px solid #8995ad;cursor:pointer">
+          🔊 Play with browser voice
+        </button>
+        <script>
+          const orvixText = {payload};
+          function speakOrvix() {{
+            const utterance = new SpeechSynthesisUtterance(orvixText);
+            utterance.lang = /[\\u0980-\\u09FF]/.test(orvixText) ? 'bn-BD' : 'en-US';
+            const voices = window.speechSynthesis.getVoices();
+            const language = utterance.lang.split('-')[0];
+            utterance.voice = voices.find(v => v.lang.toLowerCase().startsWith(language)) || null;
+            window.speechSynthesis.cancel();
+            window.speechSynthesis.speak(utterance);
+          }}
+        </script>
+        """,
+        height=52,
     )
 
 
@@ -208,11 +266,15 @@ if "chat_id" not in st.session_state:
     )
 
 with st.sidebar:
-    desktop_mode = st.toggle(
-        "Mac command mode",
+    agent_mode = st.toggle(
+        "Agent mode",
         value=False,
+        key="agent_mode",
         disabled=platform.system() != "Darwin",
+        on_change=agent_mode_changed,
     )
+    if agent_mode:
+        st.caption("কথা বলুন বা টাইপ করুন। ভয়েসে প্রতি turn-এ রেকর্ড করে Submit করতে হবে।")
 
     st.divider()
     st.header("Chats")
@@ -272,7 +334,9 @@ with st.sidebar:
 
     st.divider()
 
-    role = st.selectbox("Assistant mode", list(ROLES))
+    role = st.selectbox("Assistant mode", [name for name in ROLES if name != "Agent"])
+    if agent_mode:
+        role = "Agent"
 
     language = st.selectbox(
         "Answer language",
@@ -379,6 +443,12 @@ with st.sidebar:
 
 chat_id = st.session_state.chat_id
 
+if st.session_state.pop("agent_greeting_pending", False):
+    greeting = "হ্যালো, আমি অরভিক্স। কী খবর তোমার? কী করতে পারি?"
+    store.add_message(chat_id, "assistant", greeting)
+    queue_agent_speech(chat_id, greeting)
+    st.rerun()
+
 pending_resend = st.session_state.get("pending_resend")
 if pending_resend and pending_resend["chat_id"] == chat_id:
     st.session_state.pop("pending_resend", None)
@@ -478,6 +548,10 @@ if pending_audio and pending_audio[0] == chat_id:
         autoplay=True,
     )
 
+browser_speech = st.session_state.pop("agent_browser_speech", None)
+if browser_speech and browser_speech[0] == chat_id:
+    show_browser_speech(browser_speech[1])
+
 notice = st.session_state.pop(
     "command_notice",
     None,
@@ -505,19 +579,9 @@ if messages:
         if message["role"] == "assistant"
     ]
 
-    if answers and st.button(
-        "🔊 Read last answer aloud (Gemini TTS)"
-    ):
-        try:
-            with st.spinner("Generating audio..."):
-                st.audio(
-                    speech_wav(assistant, answers[-1]["body"]),
-                    format="audio/wav",
-                )
-        except Exception as exc:
-            st.error(
-                f"Audio could not be generated: {exc}"
-            )
+    if answers and st.button("🔊 Read last answer aloud"):
+        queue_agent_speech(chat_id, answers[-1]["body"])
+        st.rerun()
 
 
 submission = st.chat_input(
@@ -531,11 +595,6 @@ submission = st.chat_input(
 
 if submission:
     try:
-        if desktop_mode and submission.files:
-            raise ValueError(
-                "PDF নিয়ে প্রশ্ন করতে Mac command mode বন্ধ করুন।"
-            )
-
         uploaded = []
 
         for file in submission.files:
@@ -549,10 +608,13 @@ if submission:
             pages = extract_pdf(raw)
 
             if pages:
-                body = json.dumps(
-                    pages,
-                    ensure_ascii=False,
-                )
+                if pdf_has_scanned_pages(raw):
+                    body = json.dumps({
+                        "pages": pages,
+                        "pdf_base64": base64.b64encode(raw).decode("ascii"),
+                    }, ensure_ascii=False)
+                else:
+                    body = json.dumps(pages, ensure_ascii=False)
             else:
                 body = json.dumps({
                     "pdf_base64": base64.b64encode(raw).decode("ascii")
@@ -584,44 +646,28 @@ if submission:
             )
             st.stop()
 
-        # Desktop mode: execute a single supported Mac command.
-        if desktop_mode:
-            with st.spinner("Running Mac command..."):
-                reply, suggestions = execute_command(
-                    question,
-                    assistant,
-                    language,
-                    True,
-                )
-
-            store.add_message(
-                chat_id,
-                "user",
-                question,
-            )
-            store.add_message(
-                chat_id,
-                "assistant",
-                reply,
-            )
-
-            if suggestions:
-                st.session_state.setdefault(
-                    "search_suggestions", {}
-                )[(chat_id, len(messages) + 1)] = suggestions
-
+        # Agent mode runs only commands recognized by the supported Mac action parser.
+        # Other messages remain ordinary conversational requests.
+        run_local_command = False
+        if agent_mode and not uploaded:
             try:
-                with st.spinner("Generating spoken reply..."):
-                    st.session_state.command_audio = (
-                        chat_id,
-                        speech_wav(assistant, reply),
-                    )
-            except Exception as exc:
-                st.session_state.command_notice = (
-                    "কমান্ডের ফল সেভ হয়েছে, কিন্তু অডিও হয়নি: "
-                    f"{exc}"
-                )
+                parse_agent_request(question)
+                run_local_command = True
+            except ValueError:
+                pass
 
+        if run_local_command:
+            visible_question = question
+            store.add_message(chat_id, "user", visible_question)
+            try:
+                with st.spinner("কমান্ডটি সম্পন্ন করছি..."):
+                    reply, suggestions = execute_agent_request(question, assistant, language)
+            except Exception as exc:
+                reply, suggestions = f"কমান্ডটি করা যায়নি: {exc}", None
+            store.add_message(chat_id, "assistant", reply)
+            if suggestions:
+                st.session_state.setdefault("search_suggestions", {})[(chat_id, len(messages) + 1)] = suggestions
+            queue_agent_speech(chat_id, reply)
             st.rerun()
 
         # Normal chat and PDF mode.
@@ -643,13 +689,13 @@ if submission:
         # error cannot make the user's message disappear from the chat.
         store.add_message(chat_id, "user", visible_question)
 
-        with st.spinner("Thinking..."):
+        with st.spinner("কথা ভাবছি..." if agent_mode else "Thinking..."):
             reply = generate_answer(
                 question,
                 chat_id,
+                messages,
                 role,
                 language,
-                messages,
                 provider,
                 selected_model,
                 api_key,
@@ -661,6 +707,9 @@ if submission:
             "assistant",
             reply,
         )
+
+        if agent_mode:
+            queue_agent_speech(chat_id, reply)
 
         st.rerun()
 

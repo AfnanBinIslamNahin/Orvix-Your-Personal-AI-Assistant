@@ -20,6 +20,7 @@ Model availability depends on your API account. A model shown in the list may no
 
 - Attach multiple PDF files in the chat composer and ask follow-up questions in that chat.
 - Selectable text is extracted locally with `pypdf`; relevant page excerpts are sent to the selected answer provider.
+- Ask for a structured research-paper review covering the research question, method, findings, contributions, and limitations. Request exam practice, including MCQs or short questions with answers and page references.
 - Scanned PDFs are sent to the selected provider for visual processing. There is no separate OCR pipeline.
 - Limits: **10 MB per PDF**, **150 pages per PDF**, and at most **three recently attached scanned PDFs per answer**.
 
@@ -28,8 +29,8 @@ Check important answers against the original document. PDF responses may be inco
 ### Voice
 
 - Record a voice message in the chat composer. Gemini transcribes it and combines it with any typed text.
-- Ask Gemini to read the latest answer aloud using text-to-speech.
-- Mac command replies are also read aloud automatically when speech generation succeeds.
+- Agent responses use Gemini text-to-speech when available; if its quota is exhausted, a browser voice button is offered instead.
+- Use **Read last answer aloud** to replay an answer. Browser voice availability and Bengali pronunciation depend on the browser and operating system.
 
 Voice interaction is turn-based: record and submit each message. Orvix does not currently have an always-listening wake word or continuous voice conversation.
 
@@ -37,17 +38,18 @@ Voice interaction is turn-based: record and submit each message. Orvix does not 
 
 Questions about weather and other current information use web search and include the current date in the assistant context. Gemini and OpenAI API quotas or temporary provider limits can prevent a search or answer from completing.
 
-### macOS command mode
+### Agent mode
 
-On macOS, enable **Mac command mode** in the sidebar. While it is enabled, a submitted text or transcribed voice message is treated as a command.
+On macOS, enable **Agent mode** in the sidebar. Orvix greets you and responds conversationally. Submitted text or transcribed voice can trigger a supported local command.
 
 - Open an installed app by name, for example `open Calculator`, `open Notes`, or `Chrome খোলো`.
 - Open a file using its full path, or ask Orvix to find its filename in **Downloads**, **Desktop**, or **Documents**. For example: `open ~/Downloads/report.pdf` or `ফাইল report.pdf খোলো`.
 - If multiple files have the same name, provide the full path.
 - Open a Google search, for example `google search Python tutorial` or `গুগলে AIUB সার্চ করো`.
+- Perform simple arithmetic and, when asked to open Calculator, send the expression to Calculator.
 - Search summaries use Gemini and may be unavailable when the API quota is exhausted.
 
-macOS resolves app names and reports when an app cannot be opened. File lookup is limited to the named path and the common folders above. This is basic command support, not unrestricted computer control. Turn command mode off to return to normal chat and PDF questions.
+macOS resolves app names and reports when an app cannot be opened. File lookup is limited to the named path and the common folders above. Calculator input may require macOS Accessibility permission. Agent mode does not provide unrestricted computer control or edit project files. Turn it off to return to ordinary chat and PDF questions.
 
 ## Requirements
 

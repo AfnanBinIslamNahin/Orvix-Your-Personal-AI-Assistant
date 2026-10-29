@@ -1,6 +1,8 @@
 """Local Mac commands. Run Streamlit on localhost on your own Mac."""
 
 import io
+import ast
+import operator
 import os
 import platform
 import re
@@ -160,6 +162,135 @@ def parse_command(text):
         "open Safari / গুগলে AIUB সার্চ করো। "
         "সাধারণ প্রশ্ন হলে Mac command mode বন্ধ করুন।"
     )
+
+
+def _arithmetic_expression(text):
+    """Convert a simple spoken arithmetic request into a safe expression."""
+    normalized = text.translate(str.maketrans("০১২৩৪৫৬৭৮৯", "0123456789"))
+    normalized = re.sub(
+        r"\s+(?:যোগ|plus|add)\s+(?:দাও|করো|কর|করুন)\s*$",
+        "",
+        normalized,
+        flags=re.I,
+    )
+    replacements = (
+        (r"\b(?:যোগ|plus|add)\b", "+"),
+        (r"\b(?:বিয়োগ|বিয়োগ|minus|subtract)\b", "-"),
+        (r"\b(?:গুণ|গুন|times|multiply)\b", "*"),
+        (r"\b(?:ভাগ|divide)\b", "/"),
+        (r"\b(?:দাও|করো|কর|করে দাও|হিসাব করো|calculate|what is|কত)\b", " "),
+    )
+    has_operator = any(re.search(pattern, normalized, re.I) for pattern, _ in replacements[:4]) or any(
+        symbol in normalized for symbol in "+-*/"
+    )
+    if not has_operator:
+        return None
+    for pattern, replacement in replacements:
+        normalized = re.sub(pattern, replacement, normalized, flags=re.I)
+    expression = normalized.strip()
+    if not expression or re.search(r"[^0-9.()+*/\-\s]", expression):
+        return None
+    try:
+        tree = ast.parse(expression, mode="eval")
+    except SyntaxError:
+        return None
+    return expression, tree
+
+
+def _arithmetic_result(text):
+    """Evaluate a plain arithmetic request without executing arbitrary Python."""
+    parsed = _arithmetic_expression(text)
+    if not parsed:
+        return None
+    _, tree = parsed
+
+    operations = {
+        ast.Add: operator.add,
+        ast.Sub: operator.sub,
+        ast.Mult: operator.mul,
+        ast.Div: operator.truediv,
+        ast.USub: operator.neg,
+        ast.UAdd: operator.pos,
+    }
+
+    def calculate(node):
+        if isinstance(node, ast.Expression):
+            return calculate(node.body)
+        if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
+            return node.value
+        if isinstance(node, ast.BinOp) and type(node.op) in operations:
+            return operations[type(node.op)](calculate(node.left), calculate(node.right))
+        if isinstance(node, ast.UnaryOp) and type(node.op) in operations:
+            return operations[type(node.op)](calculate(node.operand))
+        raise ValueError("শুধু সাধারণ গাণিতিক হিসাব করা যায়।")
+
+    try:
+        return calculate(tree)
+    except (ValueError, ZeroDivisionError, OverflowError):
+        return None
+
+
+def _enter_calculator_expression(text):
+    parsed = _arithmetic_expression(text)
+    if not parsed or platform.system() != "Darwin":
+        return False
+    expression, _ = parsed
+    script = (
+        'tell application "Calculator" to activate\n'
+        'delay 0.5\n'
+        f'tell application "System Events" to keystroke "{expression}"\n'
+        'tell application "System Events" to keystroke return'
+    )
+    result = subprocess.run(
+        ["/usr/bin/osascript", "-e", script],
+        capture_output=True,
+        text=True,
+        timeout=8,
+        check=False,
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "Calculator-এ হিসাব পাঠানো যায়নি।")
+    return True
+
+
+def parse_agent_request(text):
+    """Return supported actions for a simple, conjunction-separated request."""
+    parts = re.split(r"\s+(?:এবং|তারপর|and then|and|then)\s+", text.strip(), flags=re.I)
+    actions = []
+    for part in parts:
+        try:
+            actions.append(("command", part, parse_command(part)))
+            continue
+        except ValueError:
+            pass
+        result = _arithmetic_result(part)
+        if result is not None:
+            actions.append(("math", part, result))
+            continue
+        raise ValueError("এই অনুরোধের কোনো অংশ সমর্থিত কমান্ড হিসেবে চেনা যায়নি।")
+    return actions
+
+
+def execute_agent_request(text, assistant, language):
+    """Run supported commands in order and return one concise spoken response."""
+    actions = parse_agent_request(text)
+    replies = []
+    suggestions = None
+    calculator_open = False
+    for kind, part, value in actions:
+        if kind == "math":
+            if calculator_open:
+                try:
+                    _enter_calculator_expression(part)
+                except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+                    replies.append(f"Calculator খুলেছি, তবে সেখানে হিসাবটি লিখতে পারিনি: {exc}")
+            replies.append(f"হিসাব: {part} = {value:g}" if isinstance(value, float) else f"হিসাব: {part} = {value}")
+            continue
+        reply, action_suggestions = execute_command(part, assistant, language, True)
+        replies.append(reply)
+        calculator_open = calculator_open or (value[0] == "app" and value[1].casefold() == "calculator")
+        suggestions = action_suggestions or suggestions
+    return "\n\n".join(replies), suggestions
 
 
 def run_mac_open(arguments):
