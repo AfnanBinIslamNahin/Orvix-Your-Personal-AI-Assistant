@@ -10,7 +10,12 @@ from dotenv import load_dotenv
 
 from assistant import Assistant, ROLES, extract_pdf, relevant_pages
 from storage import Storage
-from openai_engine import OpenAIAssistant, openai_chat_models
+from openai_engine import (
+    DEFAULT_OPENAI_MODEL,
+    OpenAIAssistant,
+    is_openai_available,
+    openai_chat_models,
+)
 from desktop_actions import execute_command, speech_wav
 
 
@@ -24,6 +29,73 @@ st.set_page_config(
     layout="wide",
 )
 
+st.markdown(
+    """
+    <style>
+      :root {
+        --orvix-bg: #0b0f17;
+        --orvix-panel: #111825;
+        --orvix-border: rgba(172, 188, 214, .12);
+        --orvix-text: #edf2fb;
+        --orvix-muted: #9aa8bd;
+        --orvix-accent: #8b9cff;
+      }
+      .stApp {
+        color: var(--orvix-text);
+        background:
+          radial-gradient(ellipse at 50% -15%, rgba(85, 105, 190, .16), transparent 48%),
+          var(--orvix-bg);
+      }
+      [data-testid="stHeader"] { background: transparent; }
+      [data-testid="stSidebar"] {
+        background: rgba(14, 20, 31, .96);
+        border-right: 1px solid var(--orvix-border);
+      }
+      [data-testid="stSidebar"] > div:first-child { padding-top: 1.2rem; }
+      [data-testid="stMainBlockContainer"] {
+        max-width: 1080px;
+        padding-top: 2.4rem;
+        padding-bottom: 5rem;
+      }
+      h1, h2, h3 { letter-spacing: -.035em; }
+      h1 { font-size: clamp(1.8rem, 3vw, 2.45rem) !important; }
+      [data-testid="stChatMessage"] {
+        background: rgba(20, 28, 42, .72);
+        border: 1px solid var(--orvix-border);
+        border-radius: 18px;
+        padding: 1rem 1.15rem;
+        margin: .7rem 0;
+      }
+      [data-testid="stChatMessage"] p { line-height: 1.7; }
+      [data-testid="stChatInput"] {
+        border: 1px solid rgba(172, 188, 214, .2);
+        border-radius: 18px;
+        background: rgba(17, 24, 37, .96);
+        box-shadow: 0 12px 40px rgba(0, 0, 0, .22);
+      }
+      [data-testid="stChatInput"]:focus-within {
+        border-color: rgba(139, 156, 255, .75);
+        box-shadow: 0 0 0 3px rgba(139, 156, 255, .12);
+      }
+      .stButton > button, [data-testid="stPopover"] > button {
+        border-radius: 10px;
+        border-color: var(--orvix-border);
+        transition: border-color .15s ease, background .15s ease, transform .15s ease;
+      }
+      .stButton > button:hover, [data-testid="stPopover"] > button:hover {
+        border-color: rgba(139, 156, 255, .55);
+        background: rgba(139, 156, 255, .09);
+      }
+      [data-testid="stSidebar"] [data-testid="stVerticalBlock"] > [data-testid="stElementContainer"] {
+        gap: .2rem;
+      }
+      hr { border-color: var(--orvix-border); }
+      [data-testid="stCaptionContainer"] { color: var(--orvix-muted); }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 if logo.is_file():
     logo_col, title_col = st.columns(
         [1, 12],
@@ -33,8 +105,10 @@ if logo.is_file():
         st.image(str(logo), width=74)
     with title_col:
         st.title("Orvix — Your Personal AI Assistant")
+        st.caption("Your personal assistant · ready when you are")
 else:
     st.title("🤖 Orvix — Your Personal AI Assistant")
+    st.caption("Your personal assistant · ready when you are")
 
 api_key = os.getenv("GEMINI_API_KEY")
 
@@ -48,6 +122,41 @@ store = Storage()
 
 # Voice and desktop search use the default Gemini model from .env.
 assistant = Assistant(api_key)
+
+
+def save_chat_rename(chat_id):
+    key = f"chat_rename_input_{chat_id}"
+    title = st.session_state.get(key, "").strip()
+    if title:
+        store.rename_chat(chat_id, title[:52])
+    st.session_state.pop("rename_chat_id", None)
+
+
+def generate_answer(question, chat_id, history, role, language, provider,
+                    selected_model, api_key, openai_key):
+    if provider == "Gemini":
+        engine = Assistant(api_key, model=selected_model)
+    else:
+        engine = OpenAIAssistant(openai_key, selected_model)
+
+    documents = store.documents(chat_id)
+    context = relevant_pages(question, documents)
+    scanned = [
+        doc for doc in documents
+        if doc["body"].startswith('{"pdf_base64"')
+    ]
+    if len(scanned) > 3:
+        st.warning("Using the three most recently attached scanned PDFs in this answer.")
+
+    return engine.answer(
+        question,
+        role,
+        language,
+        history,
+        store.notes(),
+        context,
+        scanned[:3],
+    )
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -105,21 +214,6 @@ with st.sidebar:
         disabled=platform.system() != "Darwin",
     )
 
-    summarize_search = st.checkbox(
-        "সার্চের সারাংশ দেখাও",
-        value=True,
-    )
-
-    read_command = st.checkbox(
-        "কমান্ডের উত্তর পড়ে শোনাও",
-        value=True,
-    )
-
-    st.caption(
-        "Mac mode: Chrome খোলো / গুগলে AIUB সার্চ করো। "
-        "Search ও voice-এর জন্য Gemini ব্যবহার হয়।"
-    )
-
     st.divider()
     st.header("Chats")
 
@@ -127,29 +221,54 @@ with st.sidebar:
         st.session_state.chat_id = store.create_chat()
         st.rerun()
 
-    for chat in store.chats():
+    chat_rows = store.chats()
+    for chat in chat_rows:
+        title_col, menu_col = st.columns([0.84, 0.16], gap="small")
         label = (
             "● " if chat["id"] == st.session_state.chat_id else ""
         ) + chat["title"]
-
-        if st.button(
+        if st.session_state.get("rename_chat_id") == chat["id"]:
+            rename_key = f"chat_rename_input_{chat['id']}"
+            if rename_key not in st.session_state:
+                st.session_state[rename_key] = chat["title"]
+            title_col.text_input(
+                "Rename chat",
+                key=rename_key,
+                max_chars=52,
+                label_visibility="collapsed",
+                placeholder="Type a new chat name and press Enter",
+                on_change=save_chat_rename,
+                args=(chat["id"],),
+            )
+        elif title_col.button(
             label,
-            key=f"chat_{chat['id']}",
+            key=f"chat_select_{chat['id']}",
             use_container_width=True,
         ):
             st.session_state.chat_id = chat["id"]
             st.rerun()
 
-    if st.button(
-        "Delete current chat",
-        use_container_width=True,
-    ):
-        store.delete_chat(st.session_state.chat_id)
-        chats = store.chats()
-        st.session_state.chat_id = (
-            chats[0]["id"] if chats else store.create_chat()
-        )
-        st.rerun()
+        with menu_col.popover(
+            "⋮",
+            key=f"chat_menu_{chat['id']}",
+            use_container_width=True,
+        ):
+            if st.button("Rename", key=f"rename_chat_{chat['id']}", use_container_width=True):
+                st.session_state[f"chat_rename_input_{chat['id']}"] = chat["title"]
+                st.session_state.rename_chat_id = chat["id"]
+                st.rerun()
+            if st.button("Delete", key=f"delete_chat_{chat['id']}", use_container_width=True):
+                store.delete_chat(chat["id"])
+                st.session_state.pop(f"chat_rename_input_{chat['id']}", None)
+                if st.session_state.get("rename_chat_id") == chat["id"]:
+                    st.session_state.pop("rename_chat_id", None)
+                if st.session_state.chat_id == chat["id"]:
+                    remaining_chats = store.chats()
+                    st.session_state.chat_id = (
+                        remaining_chats[0]["id"] if remaining_chats
+                        else store.create_chat()
+                    )
+                st.rerun()
 
     st.divider()
 
@@ -166,7 +285,7 @@ with st.sidebar:
 
     openai_key = os.getenv("OPENAI_API_KEY")
 
-    if openai_key and openai_key != "your_openai_key_here":
+    if openai_key and openai_key != "your_openai_key_here" and is_openai_available():
         provider_options.append("OpenAI")
 
     provider = st.selectbox(
@@ -204,7 +323,7 @@ with st.sidebar:
         )
 
     else:
-        default_model = "gpt-6-luna"
+        default_model = DEFAULT_OPENAI_MODEL
 
         try:
             models = list_openai_models(openai_key)
@@ -234,8 +353,7 @@ with st.sidebar:
 
     if "OpenAI" not in provider_options:
         st.caption(
-            "To enable OpenAI, set OPENAI_API_KEY in .env "
-            "and install updated requirements."
+            "OpenAI requires the openai package and OPENAI_API_KEY in .env."
         )
 
     with st.expander("📝 Personal notes"):
@@ -260,6 +378,44 @@ with st.sidebar:
 
 
 chat_id = st.session_state.chat_id
+
+pending_resend = st.session_state.get("pending_resend")
+if pending_resend and pending_resend["chat_id"] == chat_id:
+    st.session_state.pop("pending_resend", None)
+    current_messages = store.messages(chat_id)
+    edited_message = next(
+        (message for message in current_messages
+         if message["id"] == pending_resend["message_id"]
+         and message["role"] == "user"),
+        None,
+    )
+    if edited_message:
+        prior_messages = [
+            message for message in current_messages
+            if message["id"] < edited_message["id"]
+        ]
+        try:
+            with st.spinner("Generating a new answer..."):
+                reply = generate_answer(
+                    edited_message["body"],
+                    chat_id,
+                    prior_messages,
+                    role,
+                    language,
+                    provider,
+                    selected_model,
+                    api_key,
+                    openai_key,
+                )
+            store.add_message(chat_id, "assistant", reply)
+            st.rerun()
+        except Exception as exc:
+            error_text = str(exc)
+            if "RESOURCE_EXHAUSTED" in error_text or getattr(exc, "code", None) == 429:
+                st.error("Gemini API quota বা rate limit শেষ হয়েছে। সম্পাদিত message-টি সেভ আছে; quota ঠিক হলে আবার উত্তর তৈরি করো।")
+            else:
+                st.error(f"নতুন উত্তর তৈরি করা যায়নি: {error_text}")
+
 messages = store.messages(chat_id)
 
 for index, message in enumerate(messages):
@@ -276,6 +432,39 @@ for index, message in enumerate(messages):
                 height=180,
                 scrolling=True,
             )
+
+        if message["role"] == "user":
+            if st.session_state.get("editing_message_id") == message["id"]:
+                edit_key = f"edit_message_text_{message['id']}"
+                if edit_key not in st.session_state:
+                    st.session_state[edit_key] = message["body"].split("\n\n📎 ", 1)[0]
+                edited_text = st.text_area(
+                    "Edit your message",
+                    key=edit_key,
+                    height=110,
+                )
+                st.caption("Editing an earlier message removes later replies and regenerates this answer.")
+                send_again, cancel_edit = st.columns(2)
+                if send_again.button("Send again", key=f"resend_message_{message['id']}", use_container_width=True):
+                    if edited_text.strip():
+                        store.edit_user_message(
+                            chat_id,
+                            message["id"],
+                            edited_text.strip(),
+                        )
+                        st.session_state.pending_resend = {
+                            "chat_id": chat_id,
+                            "message_id": message["id"],
+                        }
+                        st.session_state.pop("editing_message_id", None)
+                        st.rerun()
+                if cancel_edit.button("Cancel", key=f"cancel_edit_message_{message['id']}", use_container_width=True):
+                    st.session_state.pop("editing_message_id", None)
+                    st.session_state.pop(edit_key, None)
+                    st.rerun()
+            elif st.button("✏️ Edit", key=f"edit_message_{message['id']}"):
+                st.session_state.editing_message_id = message["id"]
+                st.rerun()
 
 pending_audio = st.session_state.pop(
     "command_audio",
@@ -376,7 +565,8 @@ if submission:
         if submission.audio:
             with st.spinner("Transcribing voice message..."):
                 spoken = assistant.transcribe(
-                    submission.audio.getvalue()
+                    submission.audio.getvalue(),
+                    mime_type=getattr(submission.audio, "type", None) or "audio/wav",
                 )
 
             question = " ".join(
@@ -401,7 +591,7 @@ if submission:
                     question,
                     assistant,
                     language,
-                    summarize_search,
+                    True,
                 )
 
             store.add_message(
@@ -420,18 +610,17 @@ if submission:
                     "search_suggestions", {}
                 )[(chat_id, len(messages) + 1)] = suggestions
 
-            if read_command:
-                try:
-                    with st.spinner("Generating spoken reply..."):
-                        st.session_state.command_audio = (
-                            chat_id,
-                            speech_wav(assistant, reply),
-                        )
-                except Exception as exc:
-                    st.session_state.command_notice = (
-                        "কমান্ডের ফল সেভ হয়েছে, কিন্তু অডিও হয়নি: "
-                        f"{exc}"
+            try:
+                with st.spinner("Generating spoken reply..."):
+                    st.session_state.command_audio = (
+                        chat_id,
+                        speech_wav(assistant, reply),
                     )
+            except Exception as exc:
+                st.session_state.command_notice = (
+                    "কমান্ডের ফল সেভ হয়েছে, কিন্তু অডিও হয়নি: "
+                    f"{exc}"
+                )
 
             st.rerun()
 
@@ -450,51 +639,23 @@ if submission:
                 name for name, _ in uploaded
             )
 
+        # Persist the question before calling a provider so a temporary API
+        # error cannot make the user's message disappear from the chat.
+        store.add_message(chat_id, "user", visible_question)
+
         with st.spinner("Thinking..."):
-            if provider == "Gemini":
-                engine = Assistant(
-                    api_key,
-                    model=selected_model,
-                )
-            else:
-                engine = OpenAIAssistant(
-                    openai_key,
-                    selected_model,
-                )
-
-            documents = store.documents(chat_id)
-            context = relevant_pages(
+            reply = generate_answer(
                 question,
-                documents,
-            )
-
-            scanned = [
-                doc
-                for doc in documents
-                if doc["body"].startswith('{"pdf_base64"')
-            ]
-
-            if len(scanned) > 3:
-                st.warning(
-                    "Using the three most recently attached "
-                    "scanned PDFs in this answer."
-                )
-
-            reply = engine.answer(
-                question,
+                chat_id,
                 role,
                 language,
                 messages,
-                store.notes(),
-                context,
-                scanned[:3],
+                provider,
+                selected_model,
+                api_key,
+                openai_key,
             )
 
-        store.add_message(
-            chat_id,
-            "user",
-            visible_question,
-        )
         store.add_message(
             chat_id,
             "assistant",
@@ -504,6 +665,18 @@ if submission:
         st.rerun()
 
     except Exception as exc:
-        st.error(
-            f"Could not process your message: {exc}"
-        )
+        error_text = str(exc)
+        if "RESOURCE_EXHAUSTED" in error_text or getattr(exc, "code", None) == 429:
+            st.error("Gemini API-এর quota বা rate limit শেষ হয়েছে, তাই উত্তর তৈরি হয়নি।")
+            st.info(
+                "তোমার প্রশ্নটি chat-এ সেভ হয়েছে। কিছুক্ষণ পরে আবার চেষ্টা করো, "
+                "অথবা AI Studio-তে usage, model-এর rate limit ও billing status দেখো।"
+            )
+            st.markdown(
+                "[Gemini API usage ও rate limit দেখো](https://aistudio.google.com/rate-limit) · "
+                "[Quota documentation](https://ai.google.dev/gemini-api/docs/rate-limits)"
+            )
+            with st.expander("Technical details"):
+                st.code(error_text)
+        else:
+            st.error(f"Could not process your message: {error_text}")

@@ -1,10 +1,13 @@
 """Local Mac commands. Run Streamlit on localhost on your own Mac."""
 
 import io
+import os
 import platform
 import re
 import subprocess
+import time
 import wave
+from pathlib import Path
 from urllib.parse import urlencode, urlparse
 
 from google.genai import types
@@ -116,28 +119,40 @@ def parse_command(text):
         match = re.fullmatch(pattern, text, re.I)
 
         if match:
-            name = match.group(1).strip(' "“”').lower()
+            name = match.group(1).strip(' "“”')
 
             name = re.sub(
                 r"\s+(?:অ্যাপটি|অ্যাপটা|অ্যাপ|app|অ্যাপ্লিকেশন)$",
                 "",
                 name,
+                flags=re.I,
             )
 
             name = re.sub(
                 r"(?:টাকে|টিকে|টা|টি)$",
                 "",
                 name,
+                flags=re.I,
             ).strip()
+            normalized_name = name.casefold()
 
-            if name in APPS:
-                return "app", APPS[name]
+            for prefix in (
+                "the file ", "this file ", "file ",
+                "the image ", "this image ", "image ", "photo ", "picture ",
+                "ফাইল ", "এই ফাইল ", "ছবি ", "এই ছবি ", "ইমেজ ", "ডকুমেন্ট ",
+            ):
+                if normalized_name.startswith(prefix):
+                    return "file", name[len(prefix):].strip()
 
-            raise ValueError(
-                f"অ্যাপের নাম চিনতে পারিনি: {name!r}। "
-                "Chrome, Safari, VS Code, Finder, Notes, "
-                "Calculator, Calendar বা Music বলুন।"
-            )
+            if normalized_name in APPS:
+                return "app", APPS[normalized_name]
+
+            if "/" in name or Path(name).suffix:
+                return "file", name
+
+            # macOS will resolve an installed app by its display name and
+            # return a useful error if it cannot find it.
+            return "app", name
 
     raise ValueError(
         f"কমান্ড হিসেবে পাওয়া লেখা: {original[:200]!r}। "
@@ -163,20 +178,105 @@ def run_mac_open(arguments):
 
     if result.returncode:
         raise RuntimeError(
-            "macOS খুলতে পারেনি। অ্যাপটি ইনস্টল আছে কি না দেখুন।"
+            result.stderr.strip()
+            or "macOS খুলতে পারেনি। অ্যাপ বা ফাইলটি পাওয়া যায়নি।"
         )
+
+
+def resolve_local_file(target, search_roots=None):
+    """Resolve an explicit path or search common user folders by filename."""
+    requested = Path(target).expanduser()
+    if requested.is_file():
+        return requested.resolve()
+
+    filename = requested.name
+    if not filename:
+        raise ValueError("ফাইলের নাম বা path দিন।")
+
+    roots = search_roots or [
+        Path.home() / "Downloads",
+        Path.home() / "Desktop",
+        Path.home() / "Documents",
+    ]
+    matches = {}
+
+    # Spotlight gives fast results on macOS. Exact filename matching below
+    # avoids opening a different file that merely contains the search text.
+    if platform.system() == "Darwin":
+        for root in roots:
+            if not root.is_dir():
+                continue
+            try:
+                result = subprocess.run(
+                    ["/usr/bin/mdfind", "-onlyin", str(root), "-name", filename],
+                    capture_output=True,
+                    text=True,
+                    timeout=8,
+                    check=False,
+                )
+            except (OSError, subprocess.TimeoutExpired):
+                continue
+            for line in result.stdout.splitlines():
+                candidate = Path(line.strip())
+                if candidate.is_file() and candidate.name.casefold() == filename.casefold():
+                    matches[str(candidate.resolve())] = candidate.resolve()
+
+    # Fall back to a bounded scan for folders or files not indexed by Spotlight.
+    if not matches:
+        visited = 0
+        deadline = time.monotonic() + 4
+        for root in roots:
+            if not root.is_dir():
+                continue
+            for current, directories, files in os.walk(root):
+                directories[:] = [
+                    name for name in directories
+                    if not name.startswith(".")
+                    and name not in {"node_modules", ".git", "__pycache__"}
+                    and not name.startswith(".venv")
+                ]
+                visited += 1
+                if filename.casefold() in {name.casefold() for name in files}:
+                    for name in files:
+                        if name.casefold() == filename.casefold():
+                            candidate = Path(current) / name
+                            matches[str(candidate.resolve())] = candidate.resolve()
+                if visited >= 10000 or time.monotonic() >= deadline:
+                    break
+            if visited >= 10000 or time.monotonic() >= deadline:
+                break
+
+    found = list(matches.values())
+    if not found:
+        raise FileNotFoundError(
+            f"'{filename}' Downloads, Desktop বা Documents-এ খুঁজে পাওয়া যায়নি।"
+        )
+    if len(found) > 1:
+        options = "\n".join(f"• {path}" for path in found[:5])
+        raise ValueError(f"একই নামে একাধিক ফাইল পাওয়া গেছে; নির্দিষ্ট path দিন:\n{options}")
+    return found[0]
 
 
 def execute_command(text, assistant, language, summarize=True):
     action, value = parse_command(text)
 
     if action == "app":
-        run_mac_open(["-a", value])
+        try:
+            run_mac_open(["-a", value])
+        except RuntimeError as exc:
+            raise RuntimeError(
+                f"'{value}' অ্যাপটি খোলা যায়নি। নামটি ঠিক আছে এবং appটি install করা আছে কি না দেখুন।"
+            ) from exc
 
         return (
             f"{value} খোলার নির্দেশ macOS-এ পাঠানো হয়েছে।",
             None,
         )
+
+    if action == "file":
+        path = resolve_local_file(value)
+        run_mac_open([str(path)])
+        return f"ফাইলটি খুলেছি: {path.name}", None
 
     url = "https://www.google.com/search?" + urlencode(
         {"q": value}
